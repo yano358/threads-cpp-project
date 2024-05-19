@@ -35,7 +35,7 @@ int const BEFORE_ELEVATOR_ENTER_INDEX = 5;
 
 void print_screen()
 {
-    clear();
+    clear(); // erase() instead of clear
 
     for (int i = 0; i < screen.size(); ++i)
     {
