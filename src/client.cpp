@@ -3,9 +3,13 @@
 #include <thread>
 #include <vector>
 #include <mutex>
+#include <condition_variable>
+#include <random>
+
 using namespace std;
 
-Client::Client(int index, int maxFloor, vector<vector<string>> &screen, int &entitiesOnScreen, bool &elevatorReady) : index(index), currentFloor(0), screen(screen), entitiesOnScreen(entitiesOnScreen), elevatorReady(elevatorReady)
+Client::Client(int index, int maxFloor, vector<vector<string>> &screen, int &entitiesOnScreen, bool &elevatorReady, std::condition_variable &cv, mutex &mtx, int &takenSeats)
+    : index(index), currentFloor(0), screen(screen), entitiesOnScreen(entitiesOnScreen), elevatorReady(elevatorReady), cv(cv), mtx(mtx), takenSeats(takenSeats)
 {
     // Generate random destination floor (excluding floor 0)
     std::random_device rd;
@@ -17,20 +21,19 @@ Client::Client(int index, int maxFloor, vector<vector<string>> &screen, int &ent
     std::uniform_real_distribution<> speedDis(0.5, 1.5);
     speed = speedDis(gen);
     ready = false;
-    mutex m;
 
-    entitiesOnScreen++;
+    {
+        std::lock_guard<std::mutex> lock(m);
+        entitiesOnScreen++;
+    }
 
     move();
-
-    return;
 }
 
 Client::~Client()
 {
-    m.lock();
+    std::lock_guard<std::mutex> lock(m);
     entitiesOnScreen--;
-    m.unlock();
 }
 
 void Client::move()
@@ -38,33 +41,39 @@ void Client::move()
     int speedNew = speed * 1000;
     for (int y = 12; y >= 5; --y)
     {
-        m.lock();
-        screen[currentFloor][0][y] = '0' + index;
-        screen[currentFloor][0][y + 1] = '#';
-        m.unlock();
+        {
+            std::lock_guard<std::mutex> lock(m);
+            screen[currentFloor][0][y] = '0' + index;
+            screen[currentFloor][0][y + 1] = '#';
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(speedNew));
     }
     ready = true;
-    while (!elevatorReady)
+
     {
-        continue;
+        std::unique_lock<std::mutex> lock(m);
+        cv.wait(lock, [this]
+                { return elevatorReady && takenSeats != 3; });
     }
+
     getOnElevator();
 }
 
 void Client::getOnElevator()
 {
+    m.lock();
+    takenSeats++;
+    m.unlock();
     for (int y = 0; y <= destinationFloor; ++y)
     {
-        m.lock();
-        screen[y][0][2] = '0' + index;
-        screen[y][0][5] = '#';
-        m.unlock();
-        if (y != 0)
         {
-            m.lock();
-            screen[y - 1][0][2] = ' ';
-            m.unlock();
+            std::lock_guard<std::mutex> lock(m);
+            screen[y][0][2] = '0' + index;
+            screen[y][0][5] = '#';
+            if (y != 0)
+            {
+                screen[y - 1][0][2] = ' ';
+            }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     }
@@ -74,19 +83,25 @@ void Client::getOnElevator()
 void Client::getOffElevator()
 {
     m.lock();
-    int64_t speedNew = speed * 1000;
-    screen[destinationFloor][0][2] = ' ';
+    takenSeats--;
     m.unlock();
+    int64_t speedNew = speed * 1000;
+    {
+        std::lock_guard<std::mutex> lock(m);
+        screen[destinationFloor][0][2] = ' ';
+    }
     for (int y = 6; y <= 12; ++y)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(speedNew));
-        m.lock();
-        screen[destinationFloor][0][y] = '0' + index;
-        screen[destinationFloor][0][y - 1] = '#';
-        m.unlock();
+        {
+            std::lock_guard<std::mutex> lock(m);
+            screen[destinationFloor][0][y] = '0' + index;
+            screen[destinationFloor][0][y - 1] = '#';
+        }
     }
-    this_thread::sleep_for(chrono::milliseconds(speedNew));
-    m.lock();
-    screen[destinationFloor][0][12] = '#';
-    m.unlock();
+    std::this_thread::sleep_for(std::chrono::milliseconds(speedNew));
+    {
+        std::lock_guard<std::mutex> lock(m);
+        screen[destinationFloor][0][12] = '#';
+    }
 }

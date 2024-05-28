@@ -5,16 +5,11 @@
 #include <string>
 #include <vector>
 #include <queue>
-
 #include <mutex>
 #include <condition_variable>
-
-#include "client.h"
+#include "Client.h"
 
 using namespace std;
-
-// MARK: todo
-// TODO: threads for clients, mutex instead of pthread mutex, add elevator print
 
 // Global variables:
 vector<vector<string>> screen(5, vector<string>(1, "|   |######"));
@@ -22,21 +17,24 @@ int currFloor = 0;
 int prevFloor = 0;
 bool running = true;
 bool elevatorReady = false;
-int const maxEntitiesOnScreen = 4;
+int const maxEntitiesOnScreen = 7;
 int entitiesOnScreen = 0;
 int currEntityIndex = 0;
 
 mutex m;
+condition_variable cv;
 
 // helper constants for screen management
 int const ELEVATOR_SLOT_INDEX = 2;
 int const LAST_INDEX = screen[0][0].size() - 1;
 int const BEFORE_ELEVATOR_ENTER_INDEX = 5;
 
+int const ELEVATOR_CAPACITY = 3;
+int takenSeats = 0;
+
 void print_screen()
 {
-    clear(); // erase() instead of clear
-
+    erase(); // erase() instead of clear
     for (int i = 0; i < screen.size(); ++i)
     {
         for (int j = 0; j < screen[i].size(); ++j)
@@ -65,22 +63,31 @@ void elevator()
 {
     while (running)
     {
-        if (currFloor == 4)
         {
-            elevatorReady = true;
+            std::lock_guard<std::mutex> lock(m);
+            if (currFloor == 4)
+            {
+                elevatorReady = true;
+                cv.notify_all();
+            }
+            else
+            {
+                elevatorReady = false;
+            }
         }
-        else
-        {
-            elevatorReady = false;
-        }
+
         prevFloor = currFloor;
         currFloor = (currFloor + 1) % screen.size();
 
-        screen[prevFloor][0][ELEVATOR_SLOT_INDEX - 1] = ' ';
-        screen[prevFloor][0][ELEVATOR_SLOT_INDEX + 1] = ' ';
+        {
+            std::lock_guard<std::mutex> lock(m);
+            screen[prevFloor][0][ELEVATOR_SLOT_INDEX - 1] = ' ';
+            screen[prevFloor][0][ELEVATOR_SLOT_INDEX + 1] = ' ';
 
-        screen[currFloor][0][ELEVATOR_SLOT_INDEX - 1] = '[';
-        screen[currFloor][0][ELEVATOR_SLOT_INDEX + 1] = ']';
+            screen[currFloor][0][ELEVATOR_SLOT_INDEX - 1] = '[';
+            screen[currFloor][0][ELEVATOR_SLOT_INDEX + 1] = ']';
+        }
+
         this_thread::sleep_for(chrono::milliseconds(1000));
     }
 }
@@ -89,21 +96,22 @@ void spawnPassenger()
 {
     while (running)
     {
-        m.lock();
-        if (entitiesOnScreen < maxEntitiesOnScreen)
         {
-            currEntityIndex = (currEntityIndex + 1) % maxEntitiesOnScreen;
-            thread clientThread([]()
-                                { Client client(currEntityIndex, 5, screen, entitiesOnScreen, elevatorReady); });
-            clientThread.detach();
-            int interval = rand() % 5000 + 1000;
-            this_thread::sleep_for(chrono::milliseconds(interval));
+            std::lock_guard<std::mutex> lock(m);
+            if (entitiesOnScreen < maxEntitiesOnScreen)
+            {
+                currEntityIndex = (currEntityIndex + 1) % maxEntitiesOnScreen;
+                thread clientThread([]()
+                                    { Client client(currEntityIndex, 5, screen, entitiesOnScreen, elevatorReady, cv, m, takenSeats); });
+                clientThread.detach();
+            }
         }
-        m.unlock();
+        int interval = rand() % 2000 + 1000;
+        this_thread::sleep_for(chrono::milliseconds(interval));
     }
 }
 
-int main(int srgc, char **argv)
+int main(int argc, char **argv)
 {
     initscr();
     noecho();
@@ -122,25 +130,13 @@ int main(int srgc, char **argv)
             {
                 elevatorThread.join();
             }
-            else
-            {
-                mvprintw(10, 15, "Elevator thread is not joinable");
-            }
             if (initScreenThread.joinable())
             {
                 initScreenThread.join();
             }
-            else
-            {
-                mvprintw(10, 15, "Init screen thread is not joinable");
-            }
             if (spawnPassengerThread.joinable())
             {
                 spawnPassengerThread.join();
-            }
-            else
-            {
-                mvprintw(10, 15, "Spawn passenger thread is not joinable");
             }
             endwin();
             return 0;
