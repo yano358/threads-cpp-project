@@ -17,24 +17,27 @@ int currFloor = 0;
 int prevFloor = 0;
 bool running = true;
 bool elevatorReady = false;
-int const maxEntitiesOnScreen = 7;
+int const maxEntitiesOnScreen = 8;
 int entitiesOnScreen = 0;
 int currEntityIndex = 0;
 
 mutex m;
 condition_variable cv;
+int takenSeats = 0;
+
+// Additional synchronization variables
+vector<bool> floorsOccupied(5, false);
+vector<condition_variable> floorCvs(5);
+vector<mutex> floorMtxs(5);
 
 // helper constants for screen management
 int const ELEVATOR_SLOT_INDEX = 2;
 int const LAST_INDEX = screen[0][0].size() - 1;
 int const BEFORE_ELEVATOR_ENTER_INDEX = 5;
 
-int const ELEVATOR_CAPACITY = 3;
-int takenSeats = 0;
-
 void print_screen()
 {
-    erase(); // erase() instead of clear
+    clear(); // erase() instead of clear
     for (int i = 0; i < screen.size(); ++i)
     {
         for (int j = 0; j < screen[i].size(); ++j)
@@ -101,12 +104,12 @@ void spawnPassenger()
             if (entitiesOnScreen < maxEntitiesOnScreen)
             {
                 currEntityIndex = (currEntityIndex + 1) % maxEntitiesOnScreen;
-                thread clientThread([]()
-                                    { Client client(currEntityIndex, 5, screen, entitiesOnScreen, elevatorReady, cv, m, takenSeats); });
+                thread clientThread([]
+                                    { Client client(currEntityIndex, 5, screen, entitiesOnScreen, elevatorReady, cv, m, takenSeats, floorsOccupied, floorCvs, floorMtxs); });
                 clientThread.detach();
             }
         }
-        int interval = rand() % 2000 + 1000;
+        int interval = rand() % 5000 + 1000;
         this_thread::sleep_for(chrono::milliseconds(interval));
     }
 }

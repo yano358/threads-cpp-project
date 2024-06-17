@@ -8,8 +8,8 @@
 
 using namespace std;
 
-Client::Client(int index, int maxFloor, vector<vector<string>> &screen, int &entitiesOnScreen, bool &elevatorReady, std::condition_variable &cv, mutex &mtx, int &takenSeats)
-    : index(index), currentFloor(0), screen(screen), entitiesOnScreen(entitiesOnScreen), elevatorReady(elevatorReady), cv(cv), mtx(mtx), takenSeats(takenSeats)
+Client::Client(int index, int maxFloor, vector<vector<string>> &screen, int &entitiesOnScreen, bool &elevatorReady, std::condition_variable &cv, mutex &mtx, int &takenSeats, std::vector<bool> &floorsOccupied, std::vector<std::condition_variable> &floorCvs, std::vector<std::mutex> &floorMtxs)
+    : index(index), currentFloor(0), screen(screen), entitiesOnScreen(entitiesOnScreen), elevatorReady(elevatorReady), cv(cv), mtx(mtx), takenSeats(takenSeats), floorsOccupied(floorsOccupied), floorCvs(floorCvs), floorMtxs(floorMtxs)
 {
     // Generate random destination floor (excluding floor 0)
     std::random_device rd;
@@ -17,13 +17,13 @@ Client::Client(int index, int maxFloor, vector<vector<string>> &screen, int &ent
     std::uniform_int_distribution<> dis(1, maxFloor - 1);
     destinationFloor = dis(gen);
 
-    // Generate random speed (0.5 to 1.5 seconds)
-    std::uniform_real_distribution<> speedDis(0.5, 1.5);
+    // Generate random speed (0.5 to 1.1 seconds)
+    std::uniform_real_distribution<> speedDis(0.5, 1.1);
     speed = speedDis(gen);
     ready = false;
 
     {
-        std::lock_guard<std::mutex> lock(m);
+        std::lock_guard<std::mutex> lock(mtx);
         entitiesOnScreen++;
     }
 
@@ -32,7 +32,7 @@ Client::Client(int index, int maxFloor, vector<vector<string>> &screen, int &ent
 
 Client::~Client()
 {
-    std::lock_guard<std::mutex> lock(m);
+    std::lock_guard<std::mutex> lock(mtx);
     entitiesOnScreen--;
 }
 
@@ -42,7 +42,7 @@ void Client::move()
     for (int y = 12; y >= 5; --y)
     {
         {
-            std::lock_guard<std::mutex> lock(m);
+            std::lock_guard<std::mutex> lock(mtx);
             screen[currentFloor][0][y] = '0' + index;
             screen[currentFloor][0][y + 1] = '#';
         }
@@ -51,7 +51,7 @@ void Client::move()
     ready = true;
 
     {
-        std::unique_lock<std::mutex> lock(m);
+        std::unique_lock<std::mutex> lock(mtx);
         cv.wait(lock, [this]
                 { return elevatorReady && takenSeats != 3; });
     }
@@ -61,13 +61,15 @@ void Client::move()
 
 void Client::getOnElevator()
 {
-    m.lock();
-    takenSeats++;
-    m.unlock();
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        takenSeats++;
+    }
+
     for (int y = 0; y <= destinationFloor; ++y)
     {
         {
-            std::lock_guard<std::mutex> lock(m);
+            std::lock_guard<std::mutex> lock(mtx);
             screen[y][0][2] = '0' + index;
             screen[y][0][5] = '#';
             if (y != 0)
@@ -82,26 +84,54 @@ void Client::getOnElevator()
 
 void Client::getOffElevator()
 {
-    m.lock();
-    takenSeats--;
-    m.unlock();
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        takenSeats--;
+    }
+
     int64_t speedNew = speed * 1000;
     {
-        std::lock_guard<std::mutex> lock(m);
+        std::lock_guard<std::mutex> lock(mtx);
         screen[destinationFloor][0][2] = ' ';
     }
-    for (int y = 6; y <= 12; ++y)
+
+    // Move to the first tile of the destination floor
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(speedNew));
+        std::lock_guard<std::mutex> lock(mtx);
+        screen[destinationFloor][0][6] = '0' + index;
+    }
+    floorsOccupied[destinationFloor] = true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(speedNew));
+
+    for (int y = 7; y <= 12; ++y)
+    {
+        // Check if there is a client on the floor above and wait if there is
+        if (destinationFloor < floorsOccupied.size() - 1 && floorsOccupied[destinationFloor + 1])
         {
-            std::lock_guard<std::mutex> lock(m);
+            std::unique_lock<std::mutex> lock(floorMtxs[destinationFloor + 1]);
+            floorCvs[destinationFloor + 1].wait(lock, [this]
+                                                { return !floorsOccupied[destinationFloor + 1]; });
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(mtx);
             screen[destinationFloor][0][y] = '0' + index;
             screen[destinationFloor][0][y - 1] = '#';
         }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(speedNew));
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(speedNew));
+
     {
-        std::lock_guard<std::mutex> lock(m);
+        std::lock_guard<std::mutex> lock(mtx);
         screen[destinationFloor][0][12] = '#';
+    }
+
+    // Notify clients on the floor below
+    if (destinationFloor > 1)
+    {
+        std::lock_guard<std::mutex> lock(floorMtxs[destinationFloor]);
+        floorsOccupied[destinationFloor] = false;
+        floorCvs[destinationFloor].notify_all();
     }
 }
